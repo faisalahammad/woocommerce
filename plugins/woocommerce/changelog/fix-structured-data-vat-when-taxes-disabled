@@ -1,0 +1,4 @@
+Significance: patch
+Type: fix
+
+Don't include valueAddedTaxIncluded in structured data when taxes are disabled
