@@ -8,7 +8,6 @@ use Automattic\WooCommerce\StoreApi\Exceptions\RouteException;
 use Automattic\WooCommerce\StoreApi\Utilities\DraftOrderTrait;
 use Automattic\WooCommerce\Checkout\Helpers\ReserveStockException;
 use Automattic\WooCommerce\StoreApi\Utilities\CheckoutTrait;
-use Automattic\WooCommerce\StoreApi\Utilities\PaymentUtils;
 
 /**
  * Checkout class.
@@ -454,9 +453,7 @@ class Checkout extends AbstractCartRoute {
 	}
 
 	/**
-	 * Build a checkout response for a session with no order in flight. Reads the
-	 * chosen payment method from the session (set by `update_session_from_request`
-	 * on PATCH, or from a prior request on GET).
+	 * Build a checkout response for a session with no order in flight.
 	 *
 	 * @phpstan-param \WP_REST_Request<array<string, mixed>> $request
 	 *
@@ -464,9 +461,6 @@ class Checkout extends AbstractCartRoute {
 	 * @return \WP_REST_Response
 	 */
 	private function build_draft_route_response( \WP_REST_Request $request ) {
-		$payment_id    = (string) PaymentUtils::get_default_payment_method();
-		$customer_note = (string) ( WC()->session->get( 'store_api_customer_note' ) ?? '' );
-
 		/**
 		 * Narrow the parent-declared schema property to the checkout subclass for phpstan.
 		 *
@@ -477,9 +471,7 @@ class Checkout extends AbstractCartRoute {
 		return new \WP_REST_Response(
 			$schema->get_draft_response(
 				$this->cart_controller->get_cart_instance(),
-				wc()->customer,
-				$payment_id,
-				$customer_note
+				wc()->customer
 			)
 		);
 	}
