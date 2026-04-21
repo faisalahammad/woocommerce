@@ -1,0 +1,4 @@
+Significance: patch
+Type: tweak
+
+Replace hardcoded #1e1e1e in TreeSelectControl partially-checked state with $gray-900 token.

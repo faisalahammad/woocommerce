@@ -65,7 +65,7 @@
 
 		.components-checkbox-control__input[type="checkbox"] {
 			&:not(:checked):not(:focus) {
-				border-color: $gray-600;
+				border-color: $gray-900;
 			}
 		}
 	}

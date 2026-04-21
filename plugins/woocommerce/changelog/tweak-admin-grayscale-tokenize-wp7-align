@@ -1,0 +1,4 @@
+Significance: patch
+Type: tweak
+
+Tokenize hardcoded grays across Woo admin React client. Darkens onboarding checkbox/input borders and marketplace promo text to align with WordPress 7.0 grayscale.

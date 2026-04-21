@@ -1,0 +1,4 @@
+Significance: patch
+Type: tweak
+
+Darken variations table checkbox border to $gray-900 to align with WordPress 7.0.

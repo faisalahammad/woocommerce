@@ -46,7 +46,7 @@
 	.components-checkbox-control__input[type="checkbox"] {
 		width: 16px !important;
 		height: 16px !important;
-		border-color: #757575;
+		border-color: $gray-900;
 
 		&:checked {
 			border-color: transparent;
@@ -561,7 +561,7 @@
 
 			.components-text-control__input {
 				height: 40px;
-				border-color: #bbb;
+				border-color: $gray-600;
 				border-radius: 2px;
 				border-width: 1px;
 				font-size: 13px;
