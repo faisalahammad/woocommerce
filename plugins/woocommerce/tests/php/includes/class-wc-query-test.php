@@ -343,4 +343,356 @@ class WC_Query_Test extends \WC_Unit_Test_Case {
 		$wp_the_query = $previous_wp_the_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
 		$wp_query     = $previous_wp_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
 	}
+
+	/**
+	 * @testdox Product search by SKU returns matching products.
+	 */
+	public function test_product_search_finds_products_by_sku() {
+		$product = WC_Helper_Product::create_simple_product();
+		$product->set_name( 'Unique Product Name For SKU Test' );
+		$product->set_sku( 'SKU-TEST-12345' );
+		$product->save();
+
+		global $wp_the_query, $wp_query;
+		$previous_wp_the_query = $wp_the_query;
+		$previous_wp_query     = $wp_query;
+
+		$query        = new WP_Query();
+		$wp_the_query = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$wp_query     = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+
+		$query->query(
+			array(
+				's'         => 'SKU-TEST-12345',
+				'post_type' => 'product',
+			)
+		);
+		$found_ids = wp_list_pluck( $query->posts, 'ID' );
+
+		$this->assertContains( $product->get_id(), $found_ids, 'Product should be found by its SKU in product search.' );
+
+		$wp_the_query = $previous_wp_the_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$wp_query     = $previous_wp_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$product->delete( true );
+	}
+
+	/**
+	 * @testdox Product search by name still works alongside SKU search.
+	 */
+	public function test_product_search_by_name_still_works() {
+		$product = WC_Helper_Product::create_simple_product();
+		$product->set_name( 'FindMeByName SearchTest' );
+		$product->set_sku( 'UNIQUE-SKU-NAME-TEST' );
+		$product->save();
+
+		global $wp_the_query, $wp_query;
+		$previous_wp_the_query = $wp_the_query;
+		$previous_wp_query     = $wp_query;
+
+		$query        = new WP_Query();
+		$wp_the_query = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$wp_query     = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+
+		$query->query(
+			array(
+				's'         => 'FindMeByName SearchTest',
+				'post_type' => 'product',
+			)
+		);
+		$found_ids = wp_list_pluck( $query->posts, 'ID' );
+
+		$this->assertContains( $product->get_id(), $found_ids, 'Product should still be found by its name.' );
+
+		$wp_the_query = $previous_wp_the_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$wp_query     = $previous_wp_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$product->delete( true );
+	}
+
+	/**
+	 * @testdox SKU search is not added when wc_product_sku_enabled returns false.
+	 */
+	public function test_sku_search_not_added_when_disabled() {
+		$product = WC_Helper_Product::create_simple_product();
+		$product->set_name( 'SKU Disabled Test Product' );
+		$product->set_sku( 'DISABLED-SKU-99999' );
+		$product->save();
+
+		add_filter( 'wc_product_sku_enabled', '__return_false' );
+
+		global $wp_the_query, $wp_query;
+		$previous_wp_the_query = $wp_the_query;
+		$previous_wp_query     = $wp_query;
+
+		$query        = new WP_Query();
+		$wp_the_query = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$wp_query     = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+
+		$query->query(
+			array(
+				's'         => 'DISABLED-SKU-99999',
+				'post_type' => 'product',
+			)
+		);
+		$found_ids = wp_list_pluck( $query->posts, 'ID' );
+
+		$this->assertNotContains( $product->get_id(), $found_ids, 'Product should NOT be found by SKU when SKU search is disabled.' );
+
+		remove_filter( 'wc_product_sku_enabled', '__return_false' );
+		$wp_the_query = $previous_wp_the_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$wp_query     = $previous_wp_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$product->delete( true );
+	}
+
+	/**
+	 * @testdox add_product_sku_to_search correctly modifies the search clause.
+	 */
+	public function test_add_product_sku_to_search_modifies_clause() {
+		$sut = new WC_Query();
+
+		global $wp_the_query;
+		$previous_wp_the_query = $wp_the_query;
+
+		$query        = new WP_Query();
+		$wp_the_query = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$query->query( array( 's' => 'testsku' ) );
+
+		$search = ' AND ((wp_posts.post_title LIKE \'%testsku%\') OR (wp_posts.post_excerpt LIKE \'%testsku%\') OR (wp_posts.post_content LIKE \'%testsku%\')) ';
+
+		$result = $sut->add_product_sku_to_search( $search, $query );
+
+		$this->assertStringContainsString( 'wc_product_meta_lookup.sku LIKE', $result, 'Search clause should include SKU match.' );
+		$this->assertStringContainsString( 'OR', $result, 'Search clause should use OR to combine SKU with other conditions.' );
+
+		$wp_the_query = $previous_wp_the_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+	}
+
+	/**
+	 * @testdox add_product_sku_to_search returns unmodified clause for empty search.
+	 */
+	public function test_add_product_sku_to_search_returns_original_for_empty_search() {
+		$sut = new WC_Query();
+
+		global $wp_the_query;
+		$previous_wp_the_query = $wp_the_query;
+
+		$query        = new WP_Query();
+		$wp_the_query = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+
+		$search = ' AND ((wp_posts.post_title LIKE \'%test%\')) ';
+		$result = $sut->add_product_sku_to_search( $search, $query );
+
+		$this->assertSame( $search, $result, 'Empty search should return unmodified clause.' );
+
+		$wp_the_query = $previous_wp_the_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+	}
+
+	/**
+	 * @testdox product_search_post_join adds wc_product_meta_lookup JOIN.
+	 */
+	public function test_product_search_post_join_adds_lookup_table() {
+		$sut  = new WC_Query();
+		$join = 'original join clause';
+
+		global $wp_the_query;
+		$previous_wp_the_query = $wp_the_query;
+		$query                 = new WP_Query();
+		$wp_the_query          = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+
+		$result = $sut->product_search_post_join( $join, $query );
+
+		$this->assertStringContainsString( 'wc_product_meta_lookup', $result, 'JOIN should include wc_product_meta_lookup table.' );
+		$this->assertStringContainsString( 'LEFT JOIN', $result, 'Should use LEFT JOIN.' );
+
+		$wp_the_query = $previous_wp_the_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+	}
+
+	/**
+	 * @testdox product_search_post_join does not duplicate existing JOIN.
+	 */
+	public function test_product_search_post_join_no_duplicate() {
+		$sut  = new WC_Query();
+		$join = 'original LEFT JOIN wc_product_meta_lookup ON wp_posts.ID = wc_product_meta_lookup.product_id';
+
+		global $wp_the_query;
+		$previous_wp_the_query = $wp_the_query;
+		$query                 = new WP_Query();
+		$wp_the_query          = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+
+		$result = $sut->product_search_post_join( $join, $query );
+
+		$this->assertSame( $join, $result, 'Existing JOIN should be returned unchanged.' );
+
+		$wp_the_query = $previous_wp_the_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+	}
+
+	/**
+	 * @testdox product_search_post_join does not modify non-main queries.
+	 */
+	public function test_product_search_post_join_skips_non_main_query() {
+		$sut  = new WC_Query();
+		$join = 'original join clause';
+
+		// Query not set as main query.
+		$query         = new WP_Query();
+		$previous_main = $GLOBALS['wp_the_query'] ?? null;
+		// Use an instance that is not main.
+		$query->is_main_query = false;
+
+		$result = $sut->product_search_post_join( $join, $query );
+
+		$this->assertSame( $join, $result, 'Should not modify JOIN for non-main queries.' );
+	}
+
+	/**
+	 * @testdox Exclusion search terms are not added as positive SKU matches.
+	 */
+	public function test_add_product_sku_to_search_skips_exclusion_terms() {
+		$sut = new WC_Query();
+
+		global $wp_the_query;
+		$previous_wp_the_query = $wp_the_query;
+		$query                 = new WP_Query();
+		$wp_the_query          = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$query->query( array( 's' => '-foo' ) );
+
+		$search = " AND ((wp_posts.post_title LIKE '%foo%')) ";
+		$result = $sut->add_product_sku_to_search( $search, $query );
+
+		// Negative-only search should produce no SKU clause.
+		// In this case function returns search unchanged because SKUs are empty after filtering.
+		$this->assertStringNotContainsString( 'wc_product_meta_lookup.sku LIKE', $result, 'Exclusion terms should not be added as positive SKU matches.' );
+
+		$wp_the_query = $previous_wp_the_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+	}
+
+	/**
+	 * @testdox product_query() registers SKU search filters for search queries.
+	 *
+	 * The Product Search block submits ?s=term&post_type=product, which makes
+	 * is_post_type_archive( 'product' ) true and routes the query through
+	 * product_query() rather than the non-archive branch. SKU registration must
+	 * therefore live inside product_query().
+	 */
+	public function test_product_query_registers_sku_filters_on_search() {
+		$sut = new WC_Query();
+
+		global $wp_the_query, $wp_query;
+		$previous_wp_the_query = $wp_the_query;
+		$previous_wp_query     = $wp_query;
+
+		$query        = new WP_Query();
+		$wp_the_query = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$wp_query     = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$query->set( 's', 'some-sku-term' );
+		$query->is_search = true;
+
+		// Clear any pre-existing filters from a prior run.
+		remove_filter( 'posts_search', array( $sut, 'add_product_sku_to_search' ) );
+		remove_filter( 'posts_join', array( $sut, 'product_search_post_join' ) );
+
+		$sut->product_query( $query );
+
+		$this->assertNotFalse( has_filter( 'posts_search', array( $sut, 'add_product_sku_to_search' ) ), 'posts_search filter should be registered on search queries.' );
+		$this->assertNotFalse( has_filter( 'posts_join', array( $sut, 'product_search_post_join' ) ), 'posts_join filter should be registered on search queries.' );
+
+		// Cleanup.
+		remove_filter( 'posts_search', array( $sut, 'add_product_sku_to_search' ) );
+		remove_filter( 'posts_join', array( $sut, 'product_search_post_join' ) );
+
+		$wp_the_query = $previous_wp_the_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$wp_query     = $previous_wp_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+	}
+
+	/**
+	 * @testdox product_query() does not register SKU filters for non-search queries.
+	 */
+	public function test_product_query_skips_sku_filters_on_non_search() {
+		$sut = new WC_Query();
+
+		global $wp_the_query, $wp_query;
+		$previous_wp_the_query = $wp_the_query;
+		$previous_wp_query     = $wp_query;
+
+		$query            = new WP_Query();
+		$wp_the_query     = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$wp_query         = $query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$query->is_search = false;
+
+		remove_filter( 'posts_search', array( $sut, 'add_product_sku_to_search' ) );
+		remove_filter( 'posts_join', array( $sut, 'product_search_post_join' ) );
+
+		$sut->product_query( $query );
+
+		$this->assertFalse( has_filter( 'posts_search', array( $sut, 'add_product_sku_to_search' ) ), 'posts_search filter should not be registered for non-search queries.' );
+		$this->assertFalse( has_filter( 'posts_join', array( $sut, 'product_search_post_join' ) ), 'posts_join filter should not be registered for non-search queries.' );
+
+		$wp_the_query = $previous_wp_the_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+		$wp_query     = $previous_wp_query; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+	}
+
+	/**
+	 * @testdox maybe_prevent_redirect_for_sku_search() returns false when the SKU search flag is set.
+	 */
+	public function test_maybe_prevent_redirect_for_sku_search_returns_false_when_flag_set() {
+		$this->set_sku_search_active( true );
+
+		$result = WC_Query::maybe_prevent_redirect_for_sku_search( true );
+
+		$this->assertFalse( $result, 'Redirect should be suppressed when SKU search is active.' );
+
+		$this->set_sku_search_active( false );
+	}
+
+	/**
+	 * @testdox maybe_prevent_redirect_for_sku_search() returns the original value when the SKU search flag is not set.
+	 */
+	public function test_maybe_prevent_redirect_for_sku_search_returns_true_by_default() {
+		$this->set_sku_search_active( false );
+
+		$result = WC_Query::maybe_prevent_redirect_for_sku_search( true );
+
+		$this->assertTrue( $result, 'Redirect should be allowed when SKU search is not active.' );
+	}
+
+	/**
+	 * @testdox add_product_sku_to_search() does not set the redirect flag when only exclusion terms are searched.
+	 */
+	public function test_sku_search_does_not_set_redirect_flag_when_no_positive_terms() {
+		$sut = new WC_Query();
+		$this->set_sku_search_active( false );
+
+		$query            = new WP_Query();
+		$query->is_search = true;
+		$query->set( 's', '-foo' );
+		$query->set( 'search_terms', array( '-foo' ) );
+
+		$result = $sut->add_product_sku_to_search( ' AND ((wp_posts.post_title LIKE %s)) ', $query );
+
+		$this->assertSame( ' AND ((wp_posts.post_title LIKE %s)) ', $result, 'Search clause should be unchanged when no positive SKU terms exist.' );
+		$this->assertFalse( $this->get_sku_search_active(), 'Redirect flag should remain false when no positive SKU terms exist.' );
+	}
+
+	/**
+	 * Reflection helper: read the private $sku_search_active static property.
+	 *
+	 * @return bool
+	 */
+	private function get_sku_search_active(): bool {
+		$reflection = new ReflectionClass( WC_Query::class );
+		$property   = $reflection->getProperty( 'sku_search_active' );
+		$property->setAccessible( true );
+		return (bool) $property->getValue();
+	}
+
+	/**
+	 * Reflection helper: write the private $sku_search_active static property.
+	 *
+	 * @param bool $value Value to set.
+	 */
+	private function set_sku_search_active( bool $value ): void {
+		$reflection = new ReflectionClass( WC_Query::class );
+		$property   = $reflection->getProperty( 'sku_search_active' );
+		$property->setAccessible( true );
+		$property->setValue( null, $value );
+	}
 }

@@ -32,6 +32,15 @@ class WC_Query {
 	private static $product_query;
 
 	/**
+	 * True while the main product query's search clause was extended with SKU matching.
+	 * Read by the woocommerce_redirect_single_search_result filter so a single-result SKU
+	 * lookup renders the results page instead of redirecting to the product.
+	 *
+	 * @var bool
+	 */
+	private static $sku_search_active = false;
+
+	/**
 	 * Stores chosen attributes.
 	 *
 	 * @var array
@@ -59,6 +68,7 @@ class WC_Query {
 			add_action( 'pre_get_posts', array( $this, 'pre_get_posts' ) );
 			add_filter( 'get_pagenum_link', array( $this, 'remove_add_to_cart_pagination' ), 10, 1 );
 		}
+		add_filter( 'woocommerce_redirect_single_search_result', array( __CLASS__, 'maybe_prevent_redirect_for_sku_search' ) );
 		$this->init_query_vars();
 	}
 
@@ -67,6 +77,19 @@ class WC_Query {
 	 */
 	public static function reset_chosen_attributes() {
 		self::$chosen_attributes = null;
+	}
+
+	/**
+	 * Suppress the single-result search redirect when the active search was extended with SKU matching.
+	 *
+	 * @param mixed $redirect Current filter value (truthy = allow redirect).
+	 * @return mixed False to block the redirect, original value otherwise.
+	 */
+	public static function maybe_prevent_redirect_for_sku_search( $redirect ) {
+		if ( self::$sku_search_active ) {
+			return false;
+		}
+		return $redirect;
 	}
 
 	/**
@@ -439,6 +462,15 @@ class WC_Query {
 					);
 					$q->set( 'tax_query', $existing_tax_query );
 				}
+
+				// Add SKU to product search when SKU is enabled.
+				// This branch handles non-archive product searches and returns early,
+				// so registration must happen here; archive searches are covered by
+				// the registration inside product_query().
+				if ( wc_product_sku_enabled() ) {
+					add_filter( 'posts_search', array( $this, 'add_product_sku_to_search' ), 10, 2 );
+					add_filter( 'posts_join', array( $this, 'product_search_post_join' ), 10, 2 );
+				}
 			}
 			return;
 		}
@@ -576,6 +608,12 @@ class WC_Query {
 		$q->set( 'meta_query', $this->get_meta_query( $q->get( 'meta_query' ), true ) );
 		$q->set( 'tax_query', $this->get_tax_query( $q->get( 'tax_query' ), true ) );
 		$q->set( 'wc_query', 'product_query' );
+
+		// Add SKU to product search when SKU is enabled.
+		if ( $q->is_search() && wc_product_sku_enabled() ) {
+			add_filter( 'posts_search', array( $this, 'add_product_sku_to_search' ), 10, 2 );
+			add_filter( 'posts_join', array( $this, 'product_search_post_join' ), 10, 2 );
+		}
 		$q->set( 'post__in', array_unique( (array) apply_filters( 'loop_shop_post_in', array() ) ) );
 
 		// Work out how many products to query.
@@ -1171,5 +1209,95 @@ class WC_Query {
 	 */
 	public function remove_posts_where() {
 		wc_deprecated_function( 'WC_Query::remove_posts_where', '3.2.0', 'Nothing to remove anymore because search_post_excerpt() is deprecated.' );
+	}
+
+	/**
+	 * Join wc_product_meta_lookup table for product SKU search.
+	 *
+	 * @param string   $join  JOIN clause.
+	 * @param WP_Query $query Current WP_Query instance.
+	 * @return string Modified JOIN clause.
+	 */
+	public function product_search_post_join( $join, $query ) {
+		global $wpdb;
+
+		if ( ! $query->is_main_query() ) {
+			return $join;
+		}
+
+		if ( strpos( $join, 'wc_product_meta_lookup' ) === false ) {
+			$join .= " LEFT JOIN {$wpdb->wc_product_meta_lookup} wc_product_meta_lookup ON {$wpdb->posts}.ID = wc_product_meta_lookup.product_id ";
+		}
+
+		// Remove both filters after applying to the main query so other queries are unaffected.
+		remove_filter( 'posts_search', array( $this, 'add_product_sku_to_search' ) );
+		remove_filter( 'posts_join', array( $this, 'product_search_post_join' ) );
+
+		// Clear the SKU-augmented-search flag for the next query.
+		self::$sku_search_active = false;
+
+		return $join;
+	}
+
+	/**
+	 * Add product SKU to the search query.
+	 *
+	 * @param string   $search Search SQL WHERE clause.
+	 * @param WP_Query $query  WP_Query object.
+	 * @return string Modified search clause.
+	 */
+	public function add_product_sku_to_search( $search, $query ) {
+		global $wpdb;
+
+		if ( empty( $search ) || ! $query->is_main_query() ) {
+			return $search;
+		}
+
+		$search_terms = $query->get( 'search_terms' );
+		if ( empty( $search_terms ) ) {
+			return $search;
+		}
+
+		// Build OR conditions for each positive search term against SKU.
+		// Negative/exclusion terms (prefixed with '-') are skipped: the core
+		// name-search clause already handles them as NOT LIKE, and ORing them
+		// in here would broaden results instead of narrowing them.
+		$sku_clauses = array();
+		foreach ( (array) $search_terms as $term ) {
+			if ( ! is_string( $term ) || str_starts_with( $term, '-' ) ) {
+				continue;
+			}
+			$like          = '%' . $wpdb->esc_like( $term ) . '%';
+			$sku_clauses[] = $wpdb->prepare( '(wc_product_meta_lookup.sku LIKE %s)', $like );
+		}
+
+		if ( empty( $sku_clauses ) ) {
+			return $search;
+		}
+
+		// Mark this query as a SKU-augmented search so the single-result redirect
+		// does not hijack a customer's SKU lookup.
+		self::$sku_search_active = true;
+
+		$sku_where = implode( ' OR ', $sku_clauses );
+
+		// Restructure the search clause to add SKU matching as an OR alternative.
+		// Handles both cases: with and without the password clause for non-logged-in users.
+		if ( preg_match( '/^(.*\))(\s+AND\s+\([^)]*post_password[^)]*\)\s*)$/', $search, $matches ) ) {
+			// With password clause: separate search terms from password clause.
+			$body   = $matches[1];
+			$pass   = $matches[2];
+			$inner  = (string) preg_replace( '/^ AND \(/', '', $body );
+			$inner  = (string) preg_replace( '/\)$/', '', $inner );
+			$search = ' AND ((' . $inner . ') OR ' . $sku_where . ')' . $pass;
+		} else {
+			// Without password clause.
+			$trimmed = rtrim( (string) $search );
+			$inner   = (string) preg_replace( '/^ AND \(/', '', $trimmed );
+			$inner   = (string) preg_replace( '/\)$/', '', (string) $inner );
+			$search  = ' AND ((' . $inner . ') OR ' . $sku_where . ') ';
+		}
+
+		return $search;
 	}
 }

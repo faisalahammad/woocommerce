@@ -1,0 +1,4 @@
+Significance: minor
+Type: add
+
+Add SKU search to the Product Search block. Frontend product searches submitted via the Product Search block, Product Search widget, or product-searchform template now match product SKUs in addition to product names, content, and excerpts. Honors the `wc_product_sku_enabled` filter to disable SKU search when needed.
