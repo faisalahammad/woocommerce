@@ -79,6 +79,8 @@ class WC_Shortcode_Checkout_Test extends WC_Unit_Test_Case {
 			WC()->session->set( 'chosen_payment_method', null );
 		}
 
+		WC()->cart->empty_cart();
+
 		parent::tearDown();
 	}
 
@@ -315,5 +317,75 @@ class WC_Shortcode_Checkout_Test extends WC_Unit_Test_Case {
 		$this->assertCount( 1, $checked, 'Exactly one gateway should be pre-selected on the pay page.' );
 		$this->assertNotContains( WC_Gateway_Cheque::ID, $checked );
 		$this->assertStringNotContainsString( 'id="payment_method_' . WC_Gateway_Cheque::ID . '"', $output );
+	}
+
+	/**
+	 * Add a product to the cart and create a guest order holding the given cart hash.
+	 *
+	 * @param string|null $cart_hash Cart hash to store on the order, or null to use the hash of the current cart.
+	 * @return WC_Order
+	 */
+	private function create_order_with_cart( ?string $cart_hash = null ): WC_Order {
+		$product = WC_Helper_Product::create_simple_product();
+		WC()->cart->add_to_cart( $product->get_id(), 1 );
+
+		$order = WC_Helper_Order::create_order( 0, $product );
+		$order->set_cart_hash( $cart_hash ?? WC()->cart->get_cart_hash() );
+		$order->save();
+
+		return $order;
+	}
+
+	/**
+	 * Render the order received page for the given order and key.
+	 *
+	 * @param WC_Order $order     Order to show.
+	 * @param string   $order_key Order key to send with the request.
+	 */
+	private function render_order_received( WC_Order $order, string $order_key ): void {
+		global $wp;
+
+		$wp->query_vars['order-received'] = $order->get_id();
+		$_GET['key']                      = $order_key;
+
+		ob_start();
+		WC_Shortcode_Checkout::output( array() );
+		ob_end_clean();
+	}
+
+	/**
+	 * @testdox The order received page should keep a cart that does not belong to the order.
+	 */
+	public function test_order_received_keeps_cart_with_different_cart_hash(): void {
+		$order = $this->create_order_with_cart( 'different-cart-hash' );
+
+		$this->render_order_received( $order, $order->get_order_key() );
+
+		$this->assertFalse( WC()->cart->is_empty(), 'A newer cart should survive a visit to an earlier order received page.' );
+	}
+
+	/**
+	 * @testdox The order received page should keep the cart when the order key is invalid.
+	 */
+	public function test_order_received_keeps_cart_with_invalid_order_key(): void {
+		$order = $this->create_order_with_cart( 'different-cart-hash' );
+
+		$this->render_order_received( $order, 'not-the-order-key' );
+
+		$this->assertFalse( WC()->cart->is_empty(), 'An invalid order received link should not empty the cart.' );
+	}
+
+	/**
+	 * @testdox The order received flow should still empty the cart that was used to place the order.
+	 */
+	public function test_order_received_flow_empties_cart_with_matching_cart_hash(): void {
+		$order = $this->create_order_with_cart();
+
+		$this->render_order_received( $order, $order->get_order_key() );
+		$this->assertFalse( WC()->cart->is_empty(), 'Rendering the page alone should not decide whether to empty the cart.' );
+
+		wc_clear_cart_after_payment();
+
+		$this->assertTrue( WC()->cart->is_empty(), 'The cart used to place the order should be emptied after payment.' );
 	}
 }

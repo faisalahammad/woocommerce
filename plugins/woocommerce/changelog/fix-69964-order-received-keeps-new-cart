@@ -1,0 +1,4 @@
+Significance: patch
+Type: fix
+
+Keep a new cart when the shopper reopens the order received page of an earlier classic checkout order.
