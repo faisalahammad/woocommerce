@@ -94,6 +94,12 @@ class CouponsController {
 			throw new Exception( html_entity_decode( wp_strip_all_tags( $result->get_error_message() ) ) );
 		}
 
+		// Applying the coupon recalculates taxes from the saved address, so use the editor location again.
+		if ( '' !== $calculate_tax_args['country'] ) {
+			$order->calculate_taxes( $calculate_tax_args );
+			$order->calculate_totals( false );
+		}
+
 		// translators: %s coupon code.
 		$order->add_order_note( esc_html( sprintf( __( 'Coupon applied: "%s".', 'woocommerce' ), $code ) ), 0, true, array( 'note_group' => OrderNoteGroup::ORDER_UPDATE ) );
 

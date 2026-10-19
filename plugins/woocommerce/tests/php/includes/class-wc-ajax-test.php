@@ -1201,6 +1201,77 @@ class WC_AJAX_Test extends \WP_Ajax_UnitTestCase {
 	}
 
 	/**
+	 * @testdox Applying a coupon keeps the unsaved editor tax location instead of the saved order address.
+	 */
+	public function test_apply_coupon_uses_unsaved_editor_tax_location(): void {
+		update_option( 'woocommerce_calc_taxes', 'yes' );
+		update_option( 'woocommerce_prices_include_tax', 'no' );
+		update_option( 'woocommerce_default_country', 'BE' );
+		update_option( 'woocommerce_tax_based_on', 'billing' );
+
+		WC_Tax::_insert_tax_rate(
+			array(
+				'tax_rate_country'  => 'BE',
+				'tax_rate'          => '6.0000',
+				'tax_rate_name'     => 'Belgian VAT',
+				'tax_rate_priority' => 1,
+				'tax_rate_class'    => '',
+			)
+		);
+		WC_Tax::_insert_tax_rate(
+			array(
+				'tax_rate_country'  => 'NL',
+				'tax_rate'          => '9.0000',
+				'tax_rate_name'     => 'Dutch VAT',
+				'tax_rate_priority' => 1,
+				'tax_rate_class'    => '',
+			)
+		);
+
+		$product = WC_Helper_Product::create_simple_product(
+			true,
+			array(
+				'regular_price' => '24',
+				'price'         => '24',
+			)
+		);
+
+		$coupon = new WC_Coupon();
+		$coupon->set_code( 'editor-location-10' );
+		$coupon->set_discount_type( 'percent' );
+		$coupon->set_amount( 10 );
+		$coupon->save();
+
+		$editor_location = array(
+			'country'  => 'NL',
+			'state'    => '',
+			'postcode' => '',
+			'city'     => '',
+		);
+
+		$order = wc_create_order();
+		$order->add_product( $product, 1 );
+		$order->calculate_taxes( $editor_location );
+		$order->calculate_totals( false );
+
+		wc_get_container()->get( CouponsController::class )->add_coupon_discount(
+			array_merge(
+				$editor_location,
+				array(
+					'order_id' => $order->get_id(),
+					'coupon'   => $coupon->get_code(),
+				)
+			)
+		);
+
+		$order = wc_get_order( $order->get_id() );
+		$item  = current( $order->get_items() );
+		$this->assertEqualsWithDelta( 21.6, (float) $item->get_total(), 0.0001, 'The coupon should discount the line by 10%.' );
+		$this->assertEqualsWithDelta( 1.944, (float) $item->get_total_tax(), 0.01, 'The line tax should use the editor location rate.' );
+		$this->assertSame( '', $order->get_billing_country(), 'The unsaved billing country must not be persisted.' );
+	}
+
+	/**
 	 * @testdox Should paginate tax rate search results and find rates by location code.
 	 */
 	public function test_json_search_tax_rates_supports_pagination_and_location_search(): void {

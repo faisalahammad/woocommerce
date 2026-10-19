@@ -1,0 +1,4 @@
+Significance: patch
+Type: fix
+
+Keep the tax rate of the address entered in the order editor when applying a coupon to a manual order.
