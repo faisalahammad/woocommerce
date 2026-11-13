@@ -27,6 +27,12 @@ if ( ! class_exists( 'WC_Importer_Interface', false ) ) {
 abstract class WC_Product_Importer implements WC_Importer_Interface {
 
 	/**
+	 * Meta key on a variable product for the attributes its row set to 0 in "Used for variations".
+	 * WC_Product_CSV_Importer deletes it when the whole file is imported.
+	 */
+	protected const VARIATION_OFF_META_KEY = '_wc_import_variation_off';
+
+	/**
 	 * CSV file.
 	 *
 	 * @var string
@@ -90,6 +96,13 @@ abstract class WC_Product_Importer implements WC_Importer_Interface {
 	 * @var int
 	 */
 	protected $start_time = 0;
+
+	/**
+	 * Warnings for the item being processed, returned with its result.
+	 *
+	 * @var WP_Error[]
+	 */
+	private $item_warnings = array();
 
 	/**
 	 * Get file raw headers.
@@ -310,6 +323,8 @@ abstract class WC_Product_Importer implements WC_Importer_Interface {
 	 * @return array|WP_Error
 	 */
 	protected function process_item( $data ) {
+		$this->item_warnings = array();
+
 		try {
 			do_action( 'woocommerce_product_import_before_process_item', $data );
 			$data = apply_filters( 'woocommerce_product_import_process_item_data', $data );
@@ -418,6 +433,7 @@ abstract class WC_Product_Importer implements WC_Importer_Interface {
 				'id'           => $object->get_id(),
 				'updated'      => $updating,
 				'is_variation' => $is_variation,
+				'warnings'     => $this->item_warnings,
 			);
 		} catch ( Exception $e ) {
 			return new WP_Error( 'woocommerce_product_importer_error', $e->getMessage(), array( 'status' => $e->getCode() ) );
@@ -474,6 +490,7 @@ abstract class WC_Product_Importer implements WC_Importer_Interface {
 		if ( isset( $data['raw_attributes'] ) ) {
 			$attributes          = array();
 			$default_attributes  = array();
+			$variation_set       = array();
 			$existing_attributes = $product->get_attributes();
 
 			foreach ( $data['raw_attributes'] as $position => $attribute ) {
@@ -493,6 +510,10 @@ abstract class WC_Product_Importer implements WC_Importer_Interface {
 
 				// Get name.
 				$attribute_name = $attribute_id ? wc_attribute_taxonomy_name_by_id( $attribute_id ) : $attribute['name'];
+
+				if ( isset( $attribute['variation'] ) ) {
+					$variation_set[ sanitize_title( $attribute_name ) ] = (bool) $attribute['variation'];
+				}
 
 				// Set if is a variation attribute based on existing attributes if possible so updates via CSV do not change this.
 				$is_variation = 0;
@@ -572,6 +593,31 @@ abstract class WC_Product_Importer implements WC_Importer_Interface {
 			// Set variable default attributes.
 			if ( $product->is_type( ProductType::VARIABLE ) ) {
 				$product->set_default_attributes( $default_attributes );
+
+				// Variation rows can come in a later batch, so the explicit 0 values are kept until the import ends.
+				// A later row for the same product keeps them unless it sets the attribute to 1.
+				$variation_set += array_fill_keys( $this->get_variation_off_attributes( $product ), false );
+
+				// An attribute that ends up used for variations, for example through a default value, needs no marker.
+				foreach ( $attributes as $attribute_object ) {
+					if ( $attribute_object->get_variation() ) {
+						$variation_set[ sanitize_title( $attribute_object->get_name() ) ] = true;
+					}
+				}
+
+				$variation_off = array_map( 'strval', array_keys( array_filter( $variation_set, fn( $used ) => ! $used ) ) );
+
+				if ( $variation_off ) {
+					$product->update_meta_data(
+						self::VARIATION_OFF_META_KEY,
+						array(
+							'file'       => md5( $this->file ),
+							'attributes' => $variation_off,
+						)
+					);
+				} else {
+					$product->delete_meta_data( self::VARIATION_OFF_META_KEY );
+				}
 			}
 		}
 	}
@@ -624,6 +670,7 @@ abstract class WC_Product_Importer implements WC_Importer_Interface {
 		if ( isset( $data['raw_attributes'] ) ) {
 			$attributes        = array();
 			$parent_attributes = $this->get_variation_parent_attributes( $data['raw_attributes'], $parent );
+			$variation_off     = $this->get_variation_off_attributes( $parent );
 
 			foreach ( $data['raw_attributes'] as $attribute ) {
 				$attribute_id = 0;
@@ -642,6 +689,13 @@ abstract class WC_Product_Importer implements WC_Importer_Interface {
 				}
 
 				if ( ! isset( $parent_attributes[ $attribute_name ] ) || ! $parent_attributes[ $attribute_name ]->get_variation() ) {
+					if ( isset( $parent_attributes[ $attribute_name ] ) && '' !== (string) current( (array) ( $attribute['value'] ?? array() ) ) && in_array( $attribute_name, $variation_off, true ) ) {
+						$this->item_warnings[] = new WP_Error(
+							'woocommerce_product_importer_variation_attribute_not_used',
+							/* translators: %s: attribute name */
+							sprintf( esc_html__( 'Skipped the "%s" attribute because the parent product does not use it for variations.', 'woocommerce' ), esc_html( $attribute['name'] ) )
+						);
+					}
 					continue;
 				}
 
@@ -672,8 +726,8 @@ abstract class WC_Product_Importer implements WC_Importer_Interface {
 	/**
 	 * Get variation parent attributes and set "is_variation".
 	 *
-	 * A variation row that uses an attribute turns "Used for variations" on for it, even when the parent row
-	 * set it to 0, because a variation can only use attributes that are enabled for variations.
+	 * A variation row that uses an attribute turns "Used for variations" on for it, unless the parent row
+	 * in this import set it to 0.
 	 *
 	 * @param  array      $attributes Attributes list.
 	 * @param  WC_Product $parent     Parent product data.
@@ -681,6 +735,7 @@ abstract class WC_Product_Importer implements WC_Importer_Interface {
 	 */
 	protected function get_variation_parent_attributes( $attributes, $parent ) {
 		$parent_attributes = $parent->get_attributes();
+		$variation_off     = $this->get_variation_off_attributes( $parent );
 		$require_save      = false;
 
 		foreach ( $attributes as $attribute ) {
@@ -698,7 +753,7 @@ abstract class WC_Product_Importer implements WC_Importer_Interface {
 			}
 
 			// Check if attribute handle variations.
-			if ( isset( $parent_attributes[ $attribute_name ] ) && ! $parent_attributes[ $attribute_name ]->get_variation() ) {
+			if ( isset( $parent_attributes[ $attribute_name ] ) && ! $parent_attributes[ $attribute_name ]->get_variation() && ! in_array( $attribute_name, $variation_off, true ) ) {
 				// Re-create the attribute to CRUD save and generate again.
 				$parent_attributes[ $attribute_name ] = clone $parent_attributes[ $attribute_name ];
 				$parent_attributes[ $attribute_name ]->set_variation( 1 );
@@ -714,6 +769,24 @@ abstract class WC_Product_Importer implements WC_Importer_Interface {
 		}
 
 		return $parent_attributes;
+	}
+
+	/**
+	 * Get the attributes the parent row set to 0 in "Used for variations" during this import.
+	 *
+	 * A marker left by an import of another file is ignored.
+	 *
+	 * @param WC_Product $parent_product Parent product.
+	 * @return string[] Sanitized attribute names.
+	 */
+	private function get_variation_off_attributes( $parent_product ): array {
+		$marker = $parent_product->get_meta( self::VARIATION_OFF_META_KEY );
+
+		if ( ! is_array( $marker ) || ( $marker['file'] ?? '' ) !== md5( $this->file ) ) {
+			return array();
+		}
+
+		return array_values( array_filter( (array) ( $marker['attributes'] ?? array() ), 'is_string' ) );
 	}
 
 	/**

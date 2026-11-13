@@ -3502,7 +3502,7 @@ class WC_Product_CSV_Importer_Test extends \WC_Unit_Test_Case {
 				),
 			)
 		);
-		$data = $importer->import();
+		$data     = $importer->import();
 
 		wp_delete_file( $csv_file );
 
@@ -3556,41 +3556,170 @@ class WC_Product_CSV_Importer_Test extends \WC_Unit_Test_Case {
 	}
 
 	/**
-	 * @testdox A variation row in the same file turns "Used for variations" back on, even when the parent row sets 0.
+	 * Imports a variable product and its variation rows with a "Used for variations" column.
+	 *
+	 * @param string $rows      CSV rows after the header.
+	 * @param string $file_name Name of the temporary CSV file.
+	 * @param int    $lines     Rows per import batch, or -1 to import the whole file at once.
+	 * @param bool   $update_existing Whether rows update existing products.
+	 * @return array Import results of all batches merged.
 	 */
-	public function test_import_variation_row_enables_used_for_variations_on_parent(): void {
-		$csv_file = trailingslashit( get_temp_dir() ) . 'import-used-for-variations-with-variation.csv';
-		$csv      = "Type,SKU,Parent,Name,Attribute 1 name,Attribute 1 value(s),Attribute 1 visible,Attribute 1 used for variations,Attribute 1 global\n"
-			. "variable,used-for-variations-parent-29903,,Shirt,Color,\"Red, Blue\",1,0,0\n"
-			. "variation,used-for-variations-child-29903,used-for-variations-parent-29903,Shirt - Red,Color,Red,,,0\n";
-		file_put_contents( $csv_file, $csv ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Test fixture written to the temp dir.
+	private function import_variable_product_with_used_for_variations_column( string $rows, string $file_name = 'import-used-for-variations-with-variation.csv', int $lines = -1, bool $update_existing = false ): array {
+		$csv_file = trailingslashit( get_temp_dir() ) . $file_name;
+		file_put_contents( $csv_file, "Type,SKU,Parent,Name,Attribute 1 name,Attribute 1 value(s),Attribute 1 visible,Attribute 1 used for variations,Attribute 1 global\n" . $rows ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Test fixture written to the temp dir.
 
-		$importer = new WC_Product_CSV_Importer(
-			$csv_file,
-			array(
-				'parse'   => true,
-				'mapping' => array(
-					'Type'                            => 'type',
-					'SKU'                             => 'sku',
-					'Parent'                          => 'parent_id',
-					'Name'                            => 'name',
-					'Attribute 1 name'                => 'attributes:name1',
-					'Attribute 1 value(s)'            => 'attributes:value1',
-					'Attribute 1 visible'             => 'attributes:visible1',
-					'Attribute 1 used for variations' => 'attributes:variation1',
-					'Attribute 1 global'              => 'attributes:taxonomy1',
-				),
-			)
+		$data     = array(
+			'imported'            => array(),
+			'imported_variations' => array(),
+			'warnings'            => array(),
 		);
-		$data = $importer->import();
+		$position = 0;
+
+		do {
+			$importer = new WC_Product_CSV_Importer(
+				$csv_file,
+				array(
+					'parse'           => true,
+					'lines'           => $lines,
+					'start_pos'       => $position,
+					'update_existing' => $update_existing,
+					'mapping'         => array(
+						'Type'                            => 'type',
+						'SKU'                             => 'sku',
+						'Parent'                          => 'parent_id',
+						'Name'                            => 'name',
+						'Attribute 1 name'                => 'attributes:name1',
+						'Attribute 1 value(s)'            => 'attributes:value1',
+						'Attribute 1 visible'             => 'attributes:visible1',
+						'Attribute 1 used for variations' => 'attributes:variation1',
+						'Attribute 1 global'              => 'attributes:taxonomy1',
+					),
+				)
+			);
+			$batch    = $importer->import();
+			$position = $importer->get_file_position();
+
+			foreach ( array_keys( $data ) as $key ) {
+				$data[ $key ] = array_merge( $data[ $key ], $batch[ $key ] ?? array() );
+			}
+		} while ( 100 !== $importer->get_percent_complete() );
+
 		wp_delete_file( $csv_file );
+
+		return $data;
+	}
+
+	/**
+	 * @testdox An explicit 0 in "Used for variations" holds when a later variation row uses the attribute, in one batch or across batches.
+	 * @testWith [-1]
+	 *           [1]
+	 *
+	 * @param int $lines Rows per import batch.
+	 */
+	public function test_import_explicit_zero_used_for_variations_holds_for_variation_rows( int $lines ): void {
+		$data = $this->import_variable_product_with_used_for_variations_column(
+			"variable,used-for-variations-parent-70953,,Shirt,Color,\"Red, Blue\",1,0,0\n"
+			. "variation,used-for-variations-child-70953,used-for-variations-parent-70953,Shirt - Red,Color,Red,,,0\n",
+			'import-used-for-variations-with-variation.csv',
+			$lines
+		);
 
 		$this->assertCount( 1, $data['imported'], 'The parent should be imported.' );
 		$this->assertCount( 1, $data['imported_variations'], 'The variation should be imported.' );
-		$parent_id = wc_get_product_id_by_sku( 'used-for-variations-parent-29903' );
+		$parent_id = wc_get_product_id_by_sku( 'used-for-variations-parent-70953' );
+		$this->assertFalse( $this->get_color_attribute( $parent_id )->get_variation(), 'The explicit 0 should hold.' );
+
+		$variation = wc_get_product( wc_get_product_id_by_sku( 'used-for-variations-child-70953' ) );
+		$this->assertArrayNotHasKey( 'color', $variation->get_attributes(), 'The variation should not use the attribute.' );
+		$this->assertCount( 1, $data['warnings'], 'The skipped attribute should be logged.' );
+		$this->assertSame( 'woocommerce_product_importer_variation_attribute_not_used', $data['warnings'][0]->get_error_code() );
+	}
+
+	/**
+	 * @testdox A variation row still turns "Used for variations" on when the parent row leaves the cell empty.
+	 */
+	public function test_import_variation_row_enables_used_for_variations_when_cell_is_empty(): void {
+		$data = $this->import_variable_product_with_used_for_variations_column(
+			"variable,used-for-variations-parent-70953,,Shirt,Color,\"Red, Blue\",1,,0\n"
+			. "variation,used-for-variations-child-70953,used-for-variations-parent-70953,Shirt - Red,Color,Red,,,0\n"
+		);
+
+		$parent_id = wc_get_product_id_by_sku( 'used-for-variations-parent-70953' );
 		$this->assertTrue( $this->get_color_attribute( $parent_id )->get_variation(), 'A variation that uses the attribute needs it enabled for variations.' );
 
-		$variation = wc_get_product( wc_get_product_id_by_sku( 'used-for-variations-child-29903' ) );
+		$variation = wc_get_product( wc_get_product_id_by_sku( 'used-for-variations-child-70953' ) );
 		$this->assertSame( 'Red', $variation->get_attribute( 'color' ) );
+		$this->assertSame( array(), $data['warnings'] );
+	}
+
+	/**
+	 * @testdox An explicit 0 from a finished import does not stop a later import at the same path from turning "Used for variations" on.
+	 */
+	public function test_import_explicit_zero_from_finished_import_is_ignored(): void {
+		$this->import_variable_product_with_used_for_variations_column(
+			"variable,used-for-variations-parent-70953,,Shirt,Color,\"Red, Blue\",1,0,0\n"
+		);
+		$parent_id = wc_get_product_id_by_sku( 'used-for-variations-parent-70953' );
+		$this->assertSame( '', get_post_meta( $parent_id, '_wc_import_variation_off', true ), 'The marker should be removed when the import ends.' );
+
+		$this->import_variable_product_with_used_for_variations_column(
+			"variation,used-for-variations-child-70953,used-for-variations-parent-70953,Shirt - Red,Color,Red,,,0\n"
+		);
+
+		$this->assertTrue( $this->get_color_attribute( $parent_id )->get_variation(), 'Only the import that set 0 should keep it.' );
+		$variation = wc_get_product( wc_get_product_id_by_sku( 'used-for-variations-child-70953' ) );
+		$this->assertSame( 'Red', $variation->get_attribute( 'color' ) );
+	}
+
+	/**
+	 * @testdox An explicit 0 left by an abandoned import is cleared when a new import of the same file starts.
+	 */
+	public function test_import_explicit_zero_from_abandoned_import_is_cleared(): void {
+		$this->import_variable_product_with_used_for_variations_column(
+			"variable,used-for-variations-parent-70953,,Shirt,Color,\"Red, Blue\",1,0,0\n"
+		);
+		$parent = wc_get_product( wc_get_product_id_by_sku( 'used-for-variations-parent-70953' ) );
+		// An abandoned run never reaches the end of the file, so its marker stays behind.
+		$parent->update_meta_data(
+			'_wc_import_variation_off',
+			array(
+				'file'       => md5( trailingslashit( get_temp_dir() ) . 'import-used-for-variations-with-variation.csv' ),
+				'attributes' => array( 'color' ),
+			)
+		);
+		$parent->save();
+
+		$this->import_variable_product_with_used_for_variations_column(
+			"variation,used-for-variations-child-70953,used-for-variations-parent-70953,Shirt - Red,Color,Red,,,0\n"
+		);
+
+		$this->assertTrue( $this->get_color_attribute( $parent->get_id() )->get_variation(), 'The new import should not use the old marker.' );
+		$variation = wc_get_product( wc_get_product_id_by_sku( 'used-for-variations-child-70953' ) );
+		$this->assertSame( 'Red', $variation->get_attribute( 'color' ) );
+	}
+
+	/**
+	 * @testdox An explicit 0 holds when a later row for the same parent leaves the cell empty, in one batch or across batches.
+	 * @testWith [-1]
+	 *           [1]
+	 *
+	 * @param int $lines Rows per import batch.
+	 */
+	public function test_import_explicit_zero_holds_when_later_parent_row_is_empty( int $lines ): void {
+		$product = new WC_Product_Variable();
+		$product->set_name( 'Shirt' );
+		$product->set_sku( 'used-for-variations-parent-70953' );
+		$product->save();
+
+		$this->import_variable_product_with_used_for_variations_column(
+			"variable,used-for-variations-parent-70953,,Shirt,Color,\"Red, Blue\",1,0,0\n"
+			. "variable,used-for-variations-parent-70953,,Shirt,Color,\"Red, Blue\",1,,0\n"
+			. "variation,used-for-variations-child-70953,used-for-variations-parent-70953,Shirt - Red,Color,Red,,,0\n",
+			'import-used-for-variations-with-variation.csv',
+			$lines,
+			true
+		);
+
+		$this->assertFalse( $this->get_color_attribute( $product->get_id() )->get_variation(), 'The explicit 0 from the earlier row should hold.' );
 	}
 }

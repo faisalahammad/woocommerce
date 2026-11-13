@@ -1,0 +1,4 @@
+Significance: patch
+Type: tweak
+
+Keep a 0 in the product CSV "Attribute N used for variations" column when variation rows in the same file use that attribute.

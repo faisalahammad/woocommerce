@@ -1686,7 +1686,8 @@ class WC_Product_CSV_Importer extends WC_Product_Importer {
 			$attribute_name = $attribute_id ? sanitize_title( wc_attribute_taxonomy_name_by_id( $attribute_id ) ) : sanitize_title( $attribute['name'] );
 
 			// An attribute the parent does not have is dropped on save. An attribute the parent has but
-			// does not use for variations is allowed through: get_variation_parent_attributes() promotes it.
+			// does not use for variations is allowed through: get_variation_parent_attributes() promotes it,
+			// or set_variation_data() skips it with a warning when the parent row set it to 0.
 			if ( ! isset( $parent_attributes[ $attribute_name ] ) ) {
 				return new WP_Error(
 					'woocommerce_product_importer_variation_unknown_attribute',
@@ -1756,6 +1757,11 @@ class WC_Product_CSV_Importer extends WC_Product_Importer {
 			'updated'             => array(),
 			'skipped'             => array(),
 		);
+
+		// A run of the same file that was abandoned must not carry its markers into this one.
+		if ( 0 === (int) $this->params['start_pos'] ) {
+			$this->delete_variation_off_markers();
+		}
 
 		foreach ( $this->parsed_data as $parsed_data_key => $parsed_data ) {
 			$row_warnings  = array();
@@ -1884,6 +1890,10 @@ class WC_Product_CSV_Importer extends WC_Product_Importer {
 				$data['imported'][] = $result['id'];
 			}
 
+			if ( ! $result instanceof WP_Error && ! empty( $result['warnings'] ) ) {
+				$row_warnings = array_merge( $row_warnings, $result['warnings'] );
+			}
+
 			if ( $row_warnings && ! $result instanceof WP_Error ) {
 				$warning_data = array(
 					'row'      => $this->get_row_id( $parsed_data ),
@@ -1903,7 +1913,45 @@ class WC_Product_CSV_Importer extends WC_Product_Importer {
 			}
 		}
 
+		if ( 100 === $this->get_percent_complete() ) {
+			$this->delete_variation_off_markers();
+		}
+
 		return $data;
+	}
+
+	/**
+	 * Remove this file's "Used for variations" markers, when an import of the file starts and when it ends.
+	 *
+	 * The meta caches of the affected products are flushed too, since get_meta() reads the marker.
+	 */
+	private function delete_variation_off_markers(): void {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- Temporary import markers, read once per import run.
+		$rows     = $wpdb->get_results( $wpdb->prepare( "SELECT meta_id, post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = %s", self::VARIATION_OFF_META_KEY ) );
+		$meta_ids = array();
+
+		foreach ( $rows as $row ) {
+			$marker = maybe_unserialize( $row->meta_value );
+
+			if ( is_array( $marker ) && ( $marker['file'] ?? '' ) === md5( $this->file ) ) {
+				$meta_ids[ (int) $row->meta_id ] = (int) $row->post_id;
+			}
+		}
+
+		if ( ! $meta_ids ) {
+			return;
+		}
+
+		$placeholders = implode( ',', array_fill( 0, count( $meta_ids ), '%d' ) );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- Only %d placeholders are interpolated.
+		$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->postmeta} WHERE meta_id IN ({$placeholders})", array_keys( $meta_ids ) ) );
+
+		foreach ( array_unique( $meta_ids ) as $product_id ) {
+			wp_cache_delete( $product_id, 'post_meta' );
+			WC_Cache_Helper::invalidate_cache_group( 'object_' . $product_id );
+		}
 	}
 
 	/**
