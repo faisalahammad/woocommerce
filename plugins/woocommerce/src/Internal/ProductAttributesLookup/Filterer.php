@@ -100,6 +100,9 @@ class Filterer {
 			$term_ids_to_filter_by      = array_map( 'absint', $term_ids_to_filter_by );
 			$term_ids_to_filter_by_list = '(' . join( ',', $term_ids_to_filter_by ) . ')';
 			$is_and_query               = 'and' === $data['query_type'];
+			// Taxonomy lets the query use the lookup index. Term IDs are unique, so it does not change which rows match.
+			// The lookup table stores the encoded taxonomy name, so sanitize_title() is needed for non-ASCII names.
+			$taxonomy_clause = $wpdb->prepare( 'taxonomy = %s', sanitize_title( $taxonomy ) );
 
 			$count = count( $term_ids_to_filter_by );
 
@@ -111,6 +114,7 @@ class Filterer {
 						FROM {$this->lookup_table_name} lt
 						WHERE is_variation_attribute=0
 						{$in_stock_clause}
+						AND {$taxonomy_clause}
 						AND term_id in {$term_ids_to_filter_by_list}
 						GROUP BY product_id
 						HAVING COUNT(product_id)={$count}
@@ -119,6 +123,7 @@ class Filterer {
 						FROM {$this->lookup_table_name} lt
 						WHERE is_variation_attribute=1
 						{$in_stock_clause}
+						AND {$taxonomy_clause}
 						AND term_id in {$term_ids_to_filter_by_list}
 						GROUP BY product_or_parent_id
 						HAVING COUNT(DISTINCT term_id)={$count}
@@ -128,7 +133,7 @@ class Filterer {
 							{$clause_root}
 							SELECT product_or_parent_id
 							FROM {$this->lookup_table_name} lt
-							WHERE term_id in {$term_ids_to_filter_by_list}
+							WHERE {$taxonomy_clause} AND term_id in {$term_ids_to_filter_by_list}
 							{$in_stock_clause}
 						)";
 				}
@@ -318,13 +323,14 @@ class Filterer {
 					}
 					$terms_count   = count( $selected_term_ids );
 					$term_ids_list = $this->get_term_ids_sql( $selected_term_ids );
+					// Taxonomy lets the query use the lookup index. Term IDs are unique, so it does not change which rows match.
+					// The lookup table stores the encoded taxonomy name, so sanitize_title() is needed for non-ASCII names.
+					$taxonomy_clause = $wpdb->prepare( 'taxonomy = %s', sanitize_title( $filter_taxonomy ) );
 
 					if ( 'or' === $data['query_type'] ) {
 						// Check stock on these rows so an in-stock row for another term cannot match this selection.
-						// Taxonomy lets the query use the lookup index. Term IDs are unique, so it does not change which rows match.
 						// The extra derived table ("SELECT product_or_parent_id FROM") is needed for performance
 						// (causes the filtering subquery to be executed only once).
-						$taxonomy_clause = $wpdb->prepare( 'taxonomy = %s', $filter_taxonomy );
 						$query['where'] .= "
 							AND product_or_parent_id IN ( SELECT product_or_parent_id FROM (
 								SELECT product_or_parent_id
@@ -341,6 +347,7 @@ class Filterer {
 							FROM {$this->lookup_table_name} lt
 							WHERE is_variation_attribute=0
 							{$in_stock_clause}
+							AND {$taxonomy_clause}
 							AND term_id in {$term_ids_list}
 							GROUP BY product_id
 							HAVING COUNT(product_id)={$terms_count}
@@ -349,6 +356,7 @@ class Filterer {
 							FROM {$this->lookup_table_name} lt
 							WHERE is_variation_attribute=1
 							{$in_stock_clause}
+							AND {$taxonomy_clause}
 							AND term_id in {$term_ids_list}
 							GROUP BY product_or_parent_id
 							HAVING COUNT(DISTINCT term_id)={$terms_count}

@@ -402,7 +402,8 @@ class FiltererTest extends \WC_Unit_Test_Case {
 			$insert_query_parts[]  = '(%d, %d, %s, %d, %d, %d )';
 			$insert_query_values[] = $product_id;
 			$insert_query_values[] = $product_or_parent_id;
-			$insert_query_values[] = wc_attribute_taxonomy_name( $attribute_name );
+			// Match LookupDataStore, which stores the encoded taxonomy name.
+			$insert_query_values[] = sanitize_title( $taxonomy_name );
 			$insert_query_values[] = $term_ids_by_names[ $term ];
 			$insert_query_values[] = $is_variation ? 1 : 0;
 			$insert_query_values[] = $in_stock ? 1 : 0;
@@ -1357,6 +1358,73 @@ class FiltererTest extends \WC_Unit_Test_Case {
 		$this->assertSame( 1, $counts[ term_exists( 'Cotton', 'pa_material' )['term_id'] ] );
 		$this->assertSame( 1, $counts[ term_exists( 'Wool', 'pa_material' )['term_id'] ] );
 		$this->assert_counters( 'Material', array( 'Cotton', 'Wool' ), 'and' );
+	}
+
+	/**
+	 * @testdox Lookup filtering subqueries filter by taxonomy so the lookup index can be used.
+	 *
+	 * @testWith ["or", 1]
+	 *           ["and", 2]
+	 *
+	 * @param string $query_type       Query type.
+	 * @param int    $expected_clauses Expected number of taxonomy clauses.
+	 */
+	public function test_lookup_filtering_subqueries_filter_by_taxonomy( string $query_type, int $expected_clauses ): void {
+		$this->set_use_lookup_table( true );
+		$this->create_product_attribute( 'Color', array( 'Red', 'Blue' ) );
+		add_filter( 'woocommerce_enable_post_clause_filtering', '__return_true' );
+
+		$clauses = wc_get_container()->get( Filterer::class )->filter_by_attribute_post_clauses(
+			array( 'where' => '' ),
+			new \WP_Query(),
+			array(
+				'pa_color' => array(
+					'terms'      => array( 'red', 'blue' ),
+					'query_type' => $query_type,
+				),
+			)
+		);
+
+		$this->assertSame( $expected_clauses, substr_count( $clauses['where'], "taxonomy = 'pa_color'" ), 'Each lookup subquery should filter by taxonomy.' );
+	}
+
+	/**
+	 * @testdox Lookup filtering matches attributes with non-ASCII names, which the lookup table stores encoded.
+	 *
+	 * @testWith ["or"]
+	 *           ["and"]
+	 *
+	 * @param string $filter_type The filtering type, "or" or "and".
+	 */
+	public function test_lookup_filtering_matches_non_ascii_attribute_names( string $filter_type ): void {
+		$this->set_use_lookup_table( true );
+		$this->create_product_attribute( 'Цвет', array( 'Blue', 'Red' ) );
+		$product = $this->create_simple_product( array( 'Цвет' => array( 'Blue', 'Red' ) ), true );
+
+		$filtered_product_ids = $this->do_product_request( array( 'Цвет' => array( 'Blue', 'Red' ) ), array( 'Цвет' => $filter_type ) );
+
+		$this->assertSame( array( $product->get_id() ), $filtered_product_ids, 'The product should match a filter on a non-ASCII attribute.' );
+	}
+
+	/**
+	 * @testdox Layered nav count subqueries for other AND attributes filter by taxonomy.
+	 */
+	public function test_layered_nav_count_and_subqueries_filter_by_taxonomy(): void {
+		$this->set_use_lookup_table( true );
+		$this->create_product_attribute( 'Color', array( 'Red', 'Blue' ) );
+		$material                 = $this->create_product_attribute( 'Material', array( 'Cotton' ) );
+		$_GET['filter_color']     = 'red,blue';
+		$_GET['query_type_color'] = 'and';
+
+		$count_query = array();
+		$capture     = function ( $query ) use ( &$count_query ) {
+			$count_query = $query;
+			return $query;
+		};
+		add_filter( 'woocommerce_get_filtered_term_product_counts_query', $capture );
+		wc_get_container()->get( Filterer::class )->get_filtered_term_product_counts( $material['term_ids'], 'pa_material', 'or' );
+
+		$this->assertSame( 2, substr_count( $count_query['where'], "taxonomy = 'pa_color'" ), 'Both AND subqueries should filter by taxonomy.' );
 	}
 
 	/**

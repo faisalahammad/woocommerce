@@ -249,6 +249,32 @@ class QueryClausesTest extends AbstractProductFiltersTest {
 	}
 
 	/**
+	 * @testdox Attribute lookup subqueries filter by taxonomy so the lookup index can be used.
+	 *
+	 * @testWith [["red-slug"], "or", 1]
+	 *           [["red-slug", "green-slug"], "and", 2]
+	 *
+	 * @param string[] $terms            Chosen terms' slug.
+	 * @param string   $query_type       Query type.
+	 * @param int      $expected_clauses Expected number of taxonomy clauses.
+	 */
+	public function test_attribute_lookup_subqueries_filter_by_taxonomy( array $terms, string $query_type, int $expected_clauses ): void {
+		update_option( 'woocommerce_attribute_lookup_enabled', 'yes' );
+
+		$clauses = $this->sut->add_attribute_clauses(
+			array( 'where' => '' ),
+			array(
+				'pa_color' => array(
+					'terms'      => $terms,
+					'query_type' => $query_type,
+				),
+			)
+		);
+
+		$this->assertSame( $expected_clauses, substr_count( $clauses['where'], "taxonomy = 'pa_color'" ), 'Each lookup subquery should filter by taxonomy.' );
+	}
+
+	/**
 	 * Test the product query with post clauses containing taxonomy clauses.
 	 *
 	 * @testWith ["product_cat", ["cat-1"]]

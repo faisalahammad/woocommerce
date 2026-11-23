@@ -1,0 +1,4 @@
+Significance: patch
+Type: performance
+
+Speed up attribute filtering on large catalogs by letting the attribute lookup queries use their index.

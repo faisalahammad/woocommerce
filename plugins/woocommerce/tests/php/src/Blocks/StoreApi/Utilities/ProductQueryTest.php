@@ -464,6 +464,38 @@ class ProductQueryTest extends \WC_Unit_Test_Case {
 	}
 
 	/**
+	 * @testdox Attribute lookup subqueries filter by taxonomy so the lookup index can be used.
+	 *
+	 * @testWith ["IN", 1]
+	 *           ["AND", 2]
+	 *
+	 * @param string $operator         Attribute query operator.
+	 * @param int    $expected_clauses Expected number of taxonomy clauses.
+	 */
+	public function test_attribute_lookup_subqueries_filter_by_taxonomy( string $operator, int $expected_clauses ): void {
+		$fixtures  = new FixtureData();
+		$attribute = $fixtures->get_product_attribute( 'lookup-taxonomy', array( 'red', 'blue' ) );
+		$taxonomy  = $attribute['attribute_taxonomy'];
+		$method    = new \ReflectionMethod( ProductQuery::class, 'add_attribute_lookup_clauses' );
+		$method->setAccessible( true );
+
+		$clauses = $method->invoke(
+			$this->product_query,
+			array( 'where' => '' ),
+			array(
+				array(
+					'taxonomy' => $taxonomy,
+					'field'    => 'slug',
+					'terms'    => array( 'red-slug', 'blue-slug' ),
+					'operator' => $operator,
+				),
+			)
+		);
+
+		$this->assertSame( $expected_clauses, substr_count( $clauses['where'], "taxonomy = '{$taxonomy}'" ), 'Each lookup subquery should filter by taxonomy.' );
+	}
+
+	/**
 	 * Get product IDs matched by a Store API slug filter.
 	 *
 	 * @param string $slug_filter Slug filter value.

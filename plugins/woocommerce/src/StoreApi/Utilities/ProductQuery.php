@@ -469,21 +469,24 @@ class ProductQuery implements QueryClausesGenerator {
 			}
 			$term_ids = implode( ',', wp_parse_id_list( $terms ) );
 			$count    = count( $terms );
+			// Taxonomy lets the query use the lookup index. Term IDs are unique, so it does not change which rows match.
+			// The lookup table stores the encoded taxonomy name, so sanitize_title() is needed for non-ASCII names.
+			$taxonomy_clause = $wpdb->prepare( 'taxonomy = %s', sanitize_title( $attribute['taxonomy'] ) );
 
-			// Table names are internal; term IDs and counts are integers.
+			// Table names are internal; term IDs and counts are integers; the taxonomy clause is prepared.
 			// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQL.NotPrepared
 			if ( 'AND' === $attribute['operator'] && $count > 1 ) {
 				$query = "
 					SELECT product_or_parent_id FROM {$lookup_table}
-					WHERE is_variation_attribute = 0 {$in_stock_clause} AND term_id IN ({$term_ids})
+					WHERE is_variation_attribute = 0 {$in_stock_clause} AND {$taxonomy_clause} AND term_id IN ({$term_ids})
 					GROUP BY product_id HAVING COUNT(product_id) = {$count}
 					UNION
 					SELECT product_or_parent_id FROM {$lookup_table}
-					WHERE is_variation_attribute = 1 {$in_stock_clause} AND term_id IN ({$term_ids})
+					WHERE is_variation_attribute = 1 {$in_stock_clause} AND {$taxonomy_clause} AND term_id IN ({$term_ids})
 					GROUP BY product_or_parent_id HAVING COUNT(DISTINCT term_id) = {$count}
 				";
 			} else {
-				$query = "SELECT product_or_parent_id FROM {$lookup_table} WHERE term_id IN ({$term_ids}) {$in_stock_clause}";
+				$query = "SELECT product_or_parent_id FROM {$lookup_table} WHERE {$taxonomy_clause} AND term_id IN ({$term_ids}) {$in_stock_clause}";
 			}
 			$operator = 'NOT IN' === $attribute['operator'] ? 'NOT IN' : 'IN';
 			// The derived table makes the filtering subquery execute once.
